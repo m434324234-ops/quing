@@ -327,6 +327,13 @@ export function QuestionGenerator() {
       toast.success(`🎯 Generating ${totalQuestions} questions + ${extraQuestionsCount} extra questions for zero-weightage topics = ${totalQuestionsToGenerate} total questions`);
     }
 
+    // Reset session counters at the start of generation
+    if (generationMode === 'new_questions') {
+      setGeneratedCount(prev => ({ ...prev, new: 0 }));
+    } else {
+      setGeneratedCount(prev => ({ ...prev, pyq: 0 }));
+    }
+
     setProgress({
       currentTopic: '',
       currentTopicIndex: 0,
@@ -510,7 +517,7 @@ export function QuestionGenerator() {
                 totalGenerated++;
                 allGeneratedQuestions.push(question);
                 validQuestionGenerated = true;
-                
+
                 // Add this question to existing questions context for next iterations
                 if (allExistingQuestions) {
                   allExistingQuestions.unshift({
@@ -519,19 +526,22 @@ export function QuestionGenerator() {
                     answer: question.answer
                   });
                 }
-                
+
                 // Keep only last 3 questions for preview
                 setRecentQuestions(prev => {
                   const updated = [...prev, question];
                   return updated.slice(-3);
                 });
 
+                // Update both progress and session counter
                 setProgress(prev => ({
                   ...prev,
                   totalQuestionsGenerated: totalGenerated
                 }));
 
-                const successMessage = isZeroWeightage 
+                setGeneratedCount(prev => ({ ...prev, new: totalGenerated }));
+
+                const successMessage = isZeroWeightage
                   ? `✅ Question ${questionIndex + 1} for zero-weightage topic validated and saved!`
                   : `✅ Question ${questionIndex + 1} validated and saved!`;
                 toast.success(successMessage);
@@ -563,7 +573,6 @@ export function QuestionGenerator() {
       }
     }
 
-    setGeneratedCount(prev => ({ ...prev, new: prev.new + totalGenerated }));
     toast.success(`🎉 Generation complete! Generated ${totalGenerated} questions across ${topicsWithQuestions.filter(t => t.questionsToGenerate > 0).length} topics!`);
   };
 
@@ -646,6 +655,7 @@ export function QuestionGenerator() {
             toast.error(`Failed to save solution: ${updateError.message}`);
           } else {
             solutionsGenerated++;
+            setGeneratedCount(prev => ({ ...prev, pyq: solutionsGenerated }));
             toast.success(`✅ Solution ${i + 1} generated and saved!`);
           }
         }
@@ -659,7 +669,6 @@ export function QuestionGenerator() {
       }
     }
 
-    setGeneratedCount(prev => ({ ...prev, pyq: prev.pyq + solutionsGenerated }));
     toast.success(`🎉 PYQ Solutions complete! Generated ${solutionsGenerated} solutions!`);
   };
 
