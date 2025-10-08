@@ -300,49 +300,126 @@ export interface ExtractedQuestion {
   topic_id?: string;
 }
 
-// Gemini API Keys - Round Robin System
-let GEMINI_API_KEYS: string[] = [];
+// Gemini API Keys - Smart Round Robin System with Error Tracking
+interface ApiKeyState {
+  key: string;
+  usageCount: number;
+  errorCount: number;
+  lastError: string | null;
+  lastUsedAt: number | null;
+  isActive: boolean;
+}
+
+let API_KEY_STATES: ApiKeyState[] = [];
 let currentKeyIndex = 0;
 
 // Set API keys from user input with validation
 export function setGeminiApiKeys(keys: string[]) {
-  GEMINI_API_KEYS = keys.filter(key => key.trim() !== '');
-  currentKeyIndex = 0;
+  const validKeys = keys.filter(key => key.trim() !== '');
 
   // Checkpoint: Validate API keys are set
-  if (GEMINI_API_KEYS.length === 0) {
+  if (validKeys.length === 0) {
     console.error('CHECKPOINT FAILED: No valid API keys provided');
     throw new Error('No valid API keys provided');
   }
 
-  console.log(`CHECKPOINT PASSED: ${GEMINI_API_KEYS.length} API key(s) configured successfully`);
+  // Initialize API key states
+  API_KEY_STATES = validKeys.map(key => ({
+    key: key.trim(),
+    usageCount: 0,
+    errorCount: 0,
+    lastError: null,
+    lastUsedAt: null,
+    isActive: true
+  }));
+
+  currentKeyIndex = 0;
+  console.log(`CHECKPOINT PASSED: ${API_KEY_STATES.length} API key(s) configured successfully`);
 }
 
-// Get next API key in round-robin fashion
-function getNextGeminiKey(): string {
+// Get next API key in round-robin fashion, skipping recently errored keys
+function getNextGeminiKey(): { key: string; index: number } {
   // Checkpoint: Validate API keys exist
-  if (GEMINI_API_KEYS.length === 0) {
+  if (API_KEY_STATES.length === 0) {
     console.error('CHECKPOINT FAILED: No Gemini API keys configured');
     throw new Error('No Gemini API keys configured. Please add API keys first.');
   }
 
-  const key = GEMINI_API_KEYS[currentKeyIndex];
+  // Find next active key
+  let attempts = 0;
+  let selectedIndex = currentKeyIndex;
 
-  // Checkpoint: Validate key is not empty
-  if (!key || key.trim() === '') {
-    console.error('CHECKPOINT FAILED: Empty API key detected at index', currentKeyIndex);
-    throw new Error('Invalid API key detected');
+  while (attempts < API_KEY_STATES.length) {
+    const keyState = API_KEY_STATES[selectedIndex];
+
+    if (keyState.isActive) {
+      // Update usage tracking
+      keyState.usageCount++;
+      keyState.lastUsedAt = Date.now();
+
+      // Move to next key for round-robin
+      currentKeyIndex = (selectedIndex + 1) % API_KEY_STATES.length;
+
+      console.log(`CHECKPOINT PASSED: Using API key ${selectedIndex + 1}/${API_KEY_STATES.length} (used ${keyState.usageCount} times)`);
+      return { key: keyState.key, index: selectedIndex };
+    }
+
+    // Try next key
+    selectedIndex = (selectedIndex + 1) % API_KEY_STATES.length;
+    attempts++;
   }
 
-  currentKeyIndex = (currentKeyIndex + 1) % GEMINI_API_KEYS.length;
-  console.log(`CHECKPOINT PASSED: Using Gemini API key index: ${currentKeyIndex === 0 ? GEMINI_API_KEYS.length - 1 : currentKeyIndex - 1}`);
-  return key;
+  // All keys are inactive, reset all and try again
+  console.warn('All API keys marked as inactive, resetting...');
+  API_KEY_STATES.forEach(state => {
+    state.isActive = true;
+    state.errorCount = 0;
+  });
+
+  return getNextGeminiKey();
 }
 
-// Gemini API call function with retry logic
-async function callGeminiAPI(prompt: string, imageBase64?: string, temperature: number = 0.1, maxTokens: number = 4000, retryCount: number = 0): Promise<string> {
-  const apiKey = getNextGeminiKey();
-  const maxRetries = 3;
+// Mark API key as errored
+function markKeyError(keyIndex: number, errorMessage: string) {
+  if (keyIndex >= 0 && keyIndex < API_KEY_STATES.length) {
+    const keyState = API_KEY_STATES[keyIndex];
+    keyState.errorCount++;
+    keyState.lastError = errorMessage;
+
+    // Deactivate key after 3 consecutive errors
+    if (keyState.errorCount >= 3) {
+      keyState.isActive = false;
+      console.warn(`API key ${keyIndex + 1} deactivated after ${keyState.errorCount} consecutive errors`);
+    }
+
+    console.log(`API key ${keyIndex + 1} error count: ${keyState.errorCount}`);
+  }
+}
+
+// Reset error count for successful API call
+function markKeySuccess(keyIndex: number) {
+  if (keyIndex >= 0 && keyIndex < API_KEY_STATES.length) {
+    API_KEY_STATES[keyIndex].errorCount = 0;
+    API_KEY_STATES[keyIndex].lastError = null;
+  }
+}
+
+// Get API key statistics
+export function getApiKeyStats() {
+  return API_KEY_STATES.map((state, index) => ({
+    index: index + 1,
+    usageCount: state.usageCount,
+    errorCount: state.errorCount,
+    lastError: state.lastError,
+    isActive: state.isActive,
+    lastUsedAt: state.lastUsedAt ? new Date(state.lastUsedAt).toLocaleString() : 'Never'
+  }));
+}
+
+// Gemini API call function with smart retry logic and automatic key switching
+async function callGeminiAPI(prompt: string, imageBase64?: string, temperature: number = 0.1, maxTokens: number = 4000): Promise<string> {
+  const maxTotalRetries = API_KEY_STATES.length * 3; // Try each key up to 3 times
+  let attemptCount = 0;
 
   // Checkpoint: Validate prompt
   if (!prompt || prompt.trim() === '') {
@@ -355,109 +432,149 @@ async function callGeminiAPI(prompt: string, imageBase64?: string, temperature: 
     hasImage: !!imageBase64,
     temperature,
     maxTokens,
-    retryCount
+    availableKeys: API_KEY_STATES.length
   });
 
-  try {
-    const requestBody: any = {
-      contents: [{
-        parts: []
-      }],
-      generationConfig: {
-        temperature: temperature,
-        maxOutputTokens: maxTokens,
-      }
-    };
+  while (attemptCount < maxTotalRetries) {
+    attemptCount++;
 
-    // Add text prompt
-    requestBody.contents[0].parts.push({
-      text: prompt
-    });
+    // Get next API key
+    const { key: apiKey, index: keyIndex } = getNextGeminiKey();
 
-    // Add image if provided
-    if (imageBase64) {
-      // Remove data URL prefix if present
-      const base64Data = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-      requestBody.contents[0].parts.push({
-        inline_data: {
-          mime_type: "image/png",
-          data: base64Data
+    try {
+      const requestBody: any = {
+        contents: [{
+          parts: []
+        }],
+        generationConfig: {
+          temperature: temperature,
+          maxOutputTokens: maxTokens,
         }
-      });
-    }
+      };
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      let errorMessage = errorText;
-
-      try {
-        const errorData = JSON.parse(errorText);
-        errorMessage = errorData.error?.message || errorText;
-      } catch (e) {
-        // If parsing fails, use raw error text
-      }
-
-      console.error('CHECKPOINT FAILED: Gemini API returned error', {
-        status: response.status,
-        errorMessage,
-        retryCount
+      // Add text prompt
+      requestBody.contents[0].parts.push({
+        text: prompt
       });
 
-      // Handle invalid API key (400) - no retry
-      if (response.status === 400 && errorMessage.includes('API key not valid')) {
-        throw new Error('Invalid Gemini API key. Please check your API key and ensure it is a valid Gemini 2.0 Flash API key.');
+      // Add image if provided
+      if (imageBase64) {
+        const base64Data = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+        requestBody.contents[0].parts.push({
+          inline_data: {
+            mime_type: "image/png",
+            data: base64Data
+          }
+        });
       }
 
-      // Handle rate limiting (429) or server errors (5xx)
-      if ((response.status === 429 || response.status >= 500) && retryCount < maxRetries) {
-        const waitTime = Math.pow(2, retryCount) * 2000; // Exponential backoff: 2s, 4s, 8s
-        console.log(`CHECKPOINT: Retrying due to ${response.status} error. Waiting ${waitTime/1000}s... (attempt ${retryCount + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        return callGeminiAPI(prompt, imageBase64, temperature, maxTokens, retryCount + 1);
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = errorText;
+
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error?.message || errorText;
+        } catch (e) {
+          // If parsing fails, use raw error text
+        }
+
+        console.error(`API call failed with key ${keyIndex + 1}`, {
+          status: response.status,
+          errorMessage,
+          attempt: attemptCount
+        });
+
+        // Mark this key as errored
+        markKeyError(keyIndex, errorMessage);
+
+        // Check if this is a 403 error (unregistered callers)
+        if (response.status === 403 && errorMessage.includes('unregistered callers')) {
+          console.warn(`Key ${keyIndex + 1} failed with 403 error. Switching to next key after 10s delay...`);
+          await new Promise(resolve => setTimeout(resolve, 10000)); // 10 second delay
+          continue; // Try next key
+        }
+
+        // Handle invalid API key (400)
+        if (response.status === 400 && errorMessage.includes('API key not valid')) {
+          console.warn(`Key ${keyIndex + 1} is invalid. Switching to next key...`);
+          continue; // Try next key immediately
+        }
+
+        // Handle rate limiting (429) or server errors (5xx)
+        if (response.status === 429 || response.status >= 500) {
+          console.warn(`Key ${keyIndex + 1} hit rate limit or server error. Waiting 10s before trying next key...`);
+          await new Promise(resolve => setTimeout(resolve, 10000)); // 10 second delay
+          continue; // Try next key
+        }
+
+        // For other errors, wait and try next key
+        console.warn(`Key ${keyIndex + 1} encountered error ${response.status}. Waiting 10s before trying next key...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        continue;
       }
 
-      throw new Error(`Gemini API error (${response.status}): ${errorMessage}`);
-    }
+      console.log('CHECKPOINT PASSED: Gemini API response received successfully');
 
-    console.log('CHECKPOINT PASSED: Gemini API response received successfully');
+      const data = await response.json();
 
-    const data = await response.json();
+      // Checkpoint: Validate response structure
+      if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+        console.error('CHECKPOINT FAILED: Invalid response structure', { data });
 
-    // Checkpoint: Validate response structure
-    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
-      console.error('CHECKPOINT FAILED: Invalid response structure', { data });
+        // Handle content safety blocks
+        if (data.promptFeedback?.blockReason) {
+          throw new Error(`Content blocked by Gemini: ${data.promptFeedback.blockReason}`);
+        }
 
-      // Handle content safety blocks
-      if (data.promptFeedback?.blockReason) {
-        throw new Error(`Content blocked by Gemini: ${data.promptFeedback.blockReason}`);
+        // Try next key after delay
+        console.warn('Invalid response structure. Trying next key after 10s...');
+        markKeyError(keyIndex, 'Invalid response structure');
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        continue;
       }
-      throw new Error('Invalid response format from Gemini API');
+
+      // Checkpoint: Validate text content exists
+      if (!data.candidates[0].content.parts || !data.candidates[0].content.parts[0]?.text) {
+        console.error('CHECKPOINT FAILED: No text content in response');
+        console.warn('No text content in response. Trying next key after 10s...');
+        markKeyError(keyIndex, 'No text content in response');
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        continue;
+      }
+
+      const responseText = data.candidates[0].content.parts[0].text;
+      console.log('CHECKPOINT PASSED: Valid response text received', {
+        textLength: responseText.length
+      });
+
+      // Mark key as successful
+      markKeySuccess(keyIndex);
+
+      return responseText;
+
+    } catch (error) {
+      console.error(`CHECKPOINT FAILED: API call exception with key ${keyIndex + 1}`, error);
+      markKeyError(keyIndex, error.message);
+
+      // Wait 10 seconds before trying next key
+      if (attemptCount < maxTotalRetries) {
+        console.log(`Waiting 10 seconds before trying next key... (attempt ${attemptCount}/${maxTotalRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      }
     }
-
-    // Checkpoint: Validate text content exists
-    if (!data.candidates[0].content.parts || !data.candidates[0].content.parts[0]?.text) {
-      console.error('CHECKPOINT FAILED: No text content in response');
-      throw new Error('No text content in Gemini response');
-    }
-
-    const responseText = data.candidates[0].content.parts[0].text;
-    console.log('CHECKPOINT PASSED: Valid response text received', {
-      textLength: responseText.length
-    });
-
-    return responseText;
-  } catch (error) {
-    console.error('CHECKPOINT FAILED: Gemini API call exception', error);
-    throw new Error(`Gemini API call failed: ${error.message}`);
   }
+
+  // All attempts exhausted
+  throw new Error(`Failed to generate content after ${attemptCount} attempts across all API keys. Please check your API keys and try again.`);
 }
 
 // Convert PDF to images using PDF.js

@@ -78,11 +78,9 @@ export function QuestionGenerator() {
   const [selectedSlot, setSelectedSlot] = useState<string>('');
   const [selectedPart, setSelectedPart] = useState<string>('');
   
-  // Gemini API Keys
-  const [geminiApiKey1, setGeminiApiKey1] = useState<string>('');
-  const [geminiApiKey2, setGeminiApiKey2] = useState<string>('');
-  const [geminiApiKey3, setGeminiApiKey3] = useState<string>('');
-  
+  // Gemini API Keys - Dynamic array
+  const [apiKeys, setApiKeys] = useState<string[]>(['', '', '']);
+
   const [generationMode, setGenerationMode] = useState<'new_questions' | 'pyq_solutions'>('new_questions');
   const [questionType, setQuestionType] = useState<'MCQ' | 'MSQ' | 'NAT' | 'Subjective'>('MCQ');
   const [totalQuestions, setTotalQuestions] = useState<number>(30);
@@ -250,7 +248,26 @@ export function QuestionGenerator() {
   };
 
   const getValidApiKeys = () => {
-    return [geminiApiKey1, geminiApiKey2, geminiApiKey3].filter(key => key.trim() !== '');
+    return apiKeys.filter(key => key.trim() !== '');
+  };
+
+  const addApiKey = () => {
+    if (apiKeys.length < 100) {
+      setApiKeys([...apiKeys, '']);
+    }
+  };
+
+  const removeApiKey = (index: number) => {
+    if (apiKeys.length > 1) {
+      const newKeys = apiKeys.filter((_, i) => i !== index);
+      setApiKeys(newKeys);
+    }
+  };
+
+  const updateApiKey = (index: number, value: string) => {
+    const newKeys = [...apiKeys];
+    newKeys[index] = value;
+    setApiKeys(newKeys);
   };
 
   const startGeneration = async () => {
@@ -715,60 +732,84 @@ export function QuestionGenerator() {
         <div className="bg-white rounded-2xl shadow-xl p-8 mb-8">
           {/* Gemini API Keys Section */}
           <div className="mb-8">
-            <h3 className="text-lg font-semibold text-gray-800 mb-6 flex items-center gap-2">
-              <Key className="w-5 h-5 text-purple-600" />
-              Gemini API Keys (Round Robin)
-            </h3>
-            <p className="text-sm text-gray-600 mb-4">
-              Provide up to 3 Gemini API keys. The system will use them in round-robin fashion for better reliability.
-            </p>
-            
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="text-sm font-medium text-gray-700 mb-2 block">API Key 1</label>
-                <input
-                  type="password"
-                  value={geminiApiKey1}
-                  onChange={(e) => setGeminiApiKey1(e.target.value)}
-                  placeholder="AIzaSy..."
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                />
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-2">
+                <Key className="w-5 h-5 text-purple-600" />
+                <h3 className="text-lg font-semibold text-gray-800">
+                  Gemini API Keys (Smart Round Robin)
+                </h3>
               </div>
-              
-              <div>
-                <label className="text-sm font-medium text-gray-700 mb-2 block">API Key 2 (Optional)</label>
-                <input
-                  type="password"
-                  value={geminiApiKey2}
-                  onChange={(e) => setGeminiApiKey2(e.target.value)}
-                  placeholder="AIzaSy..."
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                />
-              </div>
-              
-              <div>
-                <label className="text-sm font-medium text-gray-700 mb-2 block">API Key 3 (Optional)</label>
-                <input
-                  type="password"
-                  value={geminiApiKey3}
-                  onChange={(e) => setGeminiApiKey3(e.target.value)}
-                  placeholder="AIzaSy..."
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                />
-              </div>
+              <button
+                onClick={addApiKey}
+                disabled={apiKeys.length >= 100}
+                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg font-medium shadow hover:shadow-lg transform hover:scale-105 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+              >
+                + Add API Key
+              </button>
             </div>
-            
+
+            <p className="text-sm text-gray-600 mb-4">
+              Add up to 100 Gemini API keys. The system will rotate them automatically and handle errors with 10-second delays.
+            </p>
+
+            <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+              {apiKeys.map((key, index) => (
+                <div key={index} className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <label className="text-sm font-medium text-gray-700">
+                        API Key {index + 1}
+                      </label>
+                      {index === 0 && (
+                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
+                          Required
+                        </span>
+                      )}
+                    </div>
+                    <input
+                      type="password"
+                      value={key}
+                      onChange={(e) => updateApiKey(index, e.target.value)}
+                      placeholder="AIzaSy..."
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                    />
+                  </div>
+                  {apiKeys.length > 1 && (
+                    <button
+                      onClick={() => removeApiKey(index)}
+                      className="mt-6 p-2 text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                      title="Remove this API key"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <h4 className="text-sm font-semibold text-blue-900 mb-2">How it works:</h4>
+              <ul className="text-sm text-blue-800 space-y-1">
+                <li>• Keys are used in round-robin rotation (1st → 2nd → 3rd → ... → 1st)</li>
+                <li>• If any key fails, it waits 10 seconds then switches to the next key</li>
+                <li>• Keys with 3+ consecutive errors are temporarily disabled</li>
+                <li>• Perfect for generating 1000+ questions without hitting rate limits</li>
+              </ul>
+            </div>
+
             {validApiKeys.length > 0 && (
               <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-                <p className="text-green-800 text-sm">
-                  ✅ {validApiKeys.length} API key{validApiKeys.length > 1 ? 's' : ''} configured
+                <p className="text-green-800 text-sm font-medium">
+                  ✅ {validApiKeys.length} API key{validApiKeys.length > 1 ? 's' : ''} configured and ready
                 </p>
               </div>
             )}
-            
+
             {validApiKeys.length === 0 && (
               <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <p className="text-red-800 text-sm">
+                <p className="text-red-800 text-sm font-medium">
                   ❌ Please provide at least one Gemini API key to start generation
                 </p>
               </div>
